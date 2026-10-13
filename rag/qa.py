@@ -72,8 +72,12 @@ class RAGQA:
                 prior interactions (e.g. from UserMemory.get_context()), used
                 to let the LLM resolve conversational follow-ups ("what about
                 the enterprise plan?"). Kept separate from the retrieved
-                document chunks and bypasses the cache, since the same
-                question can have a different answer depending on context.
+                document chunks. The cache is keyed on (question, context)
+                together, so a question asked with context is never confused
+                with the same question asked without it, but a returning
+                user whose context is unchanged (e.g. repeating a question
+                in the same conversation state) still benefits from caching
+                instead of unconditionally bypassing it.
 
         Returns:
             Dictionary with answer, sources, and metadata
@@ -81,10 +85,10 @@ class RAGQA:
         overall_start = time.time()
         logger.info(f"Processing question: {question[:50]}...")
 
-        # Check cache (skipped when conversation context is present, since
-        # the cached answer wouldn't account for the follow-up context)
-        if use_cache and self.query_cache and not conversation_context:
-            cached_answer = self.query_cache.get(question)
+        # Check cache - keyed on (question, conversation_context) so cache
+        # eligibility doesn't depend on whether context exists at all.
+        if use_cache and self.query_cache:
+            cached_answer = self.query_cache.get(question, conversation_context)
             if cached_answer:
                 logger.debug("Returning cached answer")
                 return {
@@ -188,11 +192,10 @@ Final Answer:"""
                 "details": answer,
             }
         
-        # Cache the result (skipped when conversation context was used, so a
-        # context-free repeat of the same question doesn't reuse an answer
-        # that was shaped by someone else's follow-up context)
-        if use_cache and self.query_cache and not conversation_context:
-            self.query_cache.put(question, answer)
+        # Cache the result, keyed on (question, conversation_context) - see
+        # the cache lookup above for why context is part of the key.
+        if use_cache and self.query_cache:
+            self.query_cache.put(question, answer, conversation_context)
         
         total_time = time.time() - overall_start
         logger.info(f"Total request time: {total_time:.2f}s")

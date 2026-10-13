@@ -179,50 +179,61 @@ class QueryCache:
         self.cache: Dict[str, str] = {}
     
     @staticmethod
-    def _hash_query(query: str) -> str:
+    def _hash_query(query: str, context: str = "") -> str:
         """
-        Hash query for cache key
-        
+        Hash query (plus any conversation context) for cache key.
+
+        Keying on (query, context) rather than query alone means a question
+        asked with conversation context is cached separately from the same
+        question asked without it - so the cache stays correct - while still
+        allowing a hit when the same question is asked again with the same
+        context, instead of unconditionally bypassing the cache whenever any
+        context is present.
+
         Args:
             query: Query string
-        
+            context: Optional conversation context string that was used
+                alongside the query (e.g. UserMemory.get_context() output)
+
         Returns:
             Hash string
         """
-        return hashlib.md5(query.lower().encode()).hexdigest()
-    
-    def get(self, query: str) -> Optional[str]:
+        return hashlib.md5(f"{query.lower()}||{context}".encode()).hexdigest()
+
+    def get(self, query: str, context: str = "") -> Optional[str]:
         """
         Retrieve cached response
-        
+
         Args:
             query: Query string
-        
+            context: Optional conversation context used alongside the query
+
         Returns:
             Cached response or None
         """
-        key = self._hash_query(query)
+        key = self._hash_query(query, context)
         result = self.cache.get(key)
-        
+
         if result:
             logger.debug(f"Query cache hit for: {query[:50]}...")
-        
+
         return result
-    
-    def put(self, query: str, response: str) -> None:
+
+    def put(self, query: str, response: str, context: str = "") -> None:
         """
         Store response in cache
-        
+
         Args:
             query: Query string
             response: Response text
+            context: Optional conversation context used alongside the query
         """
         if len(self.cache) >= self.max_size:
             # Remove first item (simple FIFO)
             first_key = next(iter(self.cache))
             del self.cache[first_key]
-        
-        key = self._hash_query(query)
+
+        key = self._hash_query(query, context)
         self.cache[key] = response
         logger.debug(f"Cached response for: {query[:50]}...")
     
