@@ -47,7 +47,10 @@ class ImageProcessor:
                 raise ValueError("Image is too large (max 10 MB)")
             image = Image.open(io.BytesIO(bytes(image_input)))
         elif hasattr(image_input, "read"):
-            image = Image.open(image_input)
+            data = image_input.read()
+            if len(data) > MAX_IMAGE_BYTES:
+                raise ValueError("Image is too large (max 10 MB)")
+            image = Image.open(io.BytesIO(data))
         else:
             raise ValueError("Invalid image input")
         if image.width * image.height > MAX_IMAGE_PIXELS:
