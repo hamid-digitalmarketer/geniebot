@@ -5,6 +5,7 @@ import io
 import json
 
 from telegram import InputFile, Update
+from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 from utils.logger import setup_logger
@@ -14,18 +15,38 @@ logger = setup_logger(__name__)
 MAX_TELEGRAM_MSG_LEN = 4000
 MAX_QUESTION_LEN = 1000
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_RETRY_AFTER_ATTEMPTS = 3
+
+
+async def _with_retry_after(coro_func, *args, **kwargs):
+    """Call a Telegram Bot API coroutine, honoring RetryAfter (Telegram's
+    flood-control error) by sleeping for the server-specified retry_after
+    and retrying, instead of letting it bubble up as a generic failure or
+    being silently logged and swallowed.
+    """
+    for attempt in range(MAX_RETRY_AFTER_ATTEMPTS):
+        try:
+            return await coro_func(*args, **kwargs)
+        except RetryAfter as exc:
+            wait_s = exc.retry_after
+            logger.warning(
+                f"Telegram RetryAfter: sleeping {wait_s}s before retry "
+                f"(attempt {attempt + 1}/{MAX_RETRY_AFTER_ATTEMPTS})"
+            )
+            await asyncio.sleep(wait_s)
+    return await coro_func(*args, **kwargs)
 
 
 async def _safe_reply_text(message, text: str, markdown: bool = True) -> None:
     """Reply with markdown first and fallback to plain text if parsing fails."""
     if markdown:
         try:
-            await message.reply_text(text, parse_mode="Markdown")
+            await _with_retry_after(message.reply_text, text, parse_mode="Markdown")
             return
         except Exception:
             # If markdown fails, try without formatting
             pass
-    await message.reply_text(text)
+    await _with_retry_after(message.reply_text, text)
 
 
 async def _send_long_response(message, text: str, markdown: bool = True) -> None:
@@ -169,7 +190,8 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     file_buffer = io.BytesIO(payload.encode("utf-8"))
     file_buffer.name = "geniebot_history.json"
 
-    await update.message.reply_document(
+    await _with_retry_after(
+        update.message.reply_document,
         document=InputFile(file_buffer, filename="geniebot_history.json"),
         caption=f"🗂️ Your last {len(history)} interaction(s).",
     )
@@ -245,7 +267,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not await _check_rate_limit(update, context, user_id):
         return
 
-    processing_msg = await update.message.reply_text("📝 Summarizing the last interaction...")
+    processing_msg = await _with_retry_after(update.message.reply_text, "📝 Summarizing the last interaction...")
 
     interaction_type = target.get("type", "text")
     query = target.get("query", "")
@@ -270,7 +292,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     final_text = f"📝 *Summary:*\n{summary}"
     try:
-        await processing_msg.edit_text(final_text, parse_mode="Markdown")
+        await _with_retry_after(processing_msg.edit_text, final_text, parse_mode="Markdown")
     except Exception:
         await _safe_reply_text(update.message, final_text, markdown=False)
 
@@ -374,16 +396,16 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if photo.file_size and photo.file_size > MAX_IMAGE_BYTES:
             await _safe_reply_text(update.message, "❌ Image too large (max 10 MB).", markdown=False)
             return
-        photo_file = await photo.get_file()
+        photo_file = await _with_retry_after(photo.get_file)
         image_data = await photo_file.download_as_bytearray()
 
-        processing_msg = await update.message.reply_text("🔄 Processing image... Please wait.")
+        processing_msg = await _with_retry_after(update.message.reply_text, "🔄 Processing image... Please wait.")
         result = await asyncio.to_thread(vision_processor.process_image, bytes(image_data))
 
         if not result.get("success"):
             error = result.get("error", "Unknown error")
             logger.error(f"Image processing error: {error}")
-            await processing_msg.edit_text("❌ Could not process this image. Please try another.")
+            await _with_retry_after(processing_msg.edit_text, "❌ Could not process this image. Please try another.")
             return
 
         caption = result.get("caption", "No caption generated")
@@ -394,9 +416,9 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         response = f"📸 *Caption:*\n{caption}\n\n🏷️ *Tags:* {', '.join(tags)}"
         try:
-            await processing_msg.edit_text(response, parse_mode="Markdown")
+            await _with_retry_after(processing_msg.edit_text, response, parse_mode="Markdown")
         except Exception:
-            await processing_msg.edit_text(response)
+            await _with_retry_after(processing_msg.edit_text, response)
 
         logger.info(f"Image processed for user {user_id}")
     except Exception as exc:
@@ -405,6 +427,16 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global Telegram error handler."""
+    """Global Telegram error handler.
+
+    Most Bot API calls already go through _with_retry_after, but this is a
+    safety net: if a RetryAfter ever reaches here uncaught, honor Telegram's
+    flood-control wait instead of just logging it.
+    """
+    if isinstance(context.error, RetryAfter):
+        wait_s = context.error.retry_after
+        logger.warning(f"Unhandled Telegram RetryAfter reached error_handler: sleeping {wait_s}s")
+        await asyncio.sleep(wait_s)
+        return
     await asyncio.sleep(0)
     logger.error(f"Update {update} caused error: {context.error}")
