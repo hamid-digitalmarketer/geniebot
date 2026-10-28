@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import re
 
 from telegram import InputFile, Update
 from telegram.error import RetryAfter
@@ -61,11 +62,14 @@ async def _send_long_response(message, text: str, markdown: bool = True) -> None
 
 
 def _convert_markdown_to_telegram(text: str) -> str:
-    """Convert Markdown to plain text with emoji headers (Telegram Markdown doesn't support #)."""
+    """Convert Markdown to Telegram Markdown (emoji headers + single-asterisk bold)."""
     lines = text.split('\n')
     converted = []
-    
+
     for line in lines:
+        # Telegram's legacy Markdown only supports single-asterisk *bold*,
+        # so translate **bold** before handling headings (issue #21).
+        line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
         # Convert ### Heading -> 📌 Heading
         if line.startswith('### '):
             heading = line[4:].strip()

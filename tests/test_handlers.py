@@ -9,7 +9,11 @@ is driven directly with asyncio.run() instead of an async test function.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from bot.handlers import export_command, stats_command
+from bot.handlers import (
+    _convert_markdown_to_telegram,
+    export_command,
+    stats_command,
+)
 from utils.cache import RateLimiter
 from utils.memory import UserMemory
 
@@ -102,3 +106,37 @@ def test_stats_handles_missing_systems_gracefully():
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
     assert "Unavailable" in text
+
+
+# ---------------------------------------------------------------------------
+# _convert_markdown_to_telegram (issue #21)
+# ---------------------------------------------------------------------------
+
+
+def test_convert_markdown_bold_to_telegram():
+    # Telegram's legacy Markdown only supports single-asterisk *bold*.
+    assert _convert_markdown_to_telegram("This is **bold** text") == "This is *bold* text"
+
+
+def test_convert_markdown_bold_multiple_occurrences():
+    assert (
+        _convert_markdown_to_telegram("**one** and **two** and **three**")
+        == "*one* and *two* and *three*"
+    )
+
+
+def test_convert_markdown_bold_across_multiple_lines():
+    text = "First **bold** line\nSecond **also bold** line"
+    assert _convert_markdown_to_telegram(text) == "First *bold* line\nSecond *also bold* line"
+
+
+def test_convert_markdown_headings_still_converted():
+    text = "# Title\n\nSome **bold** body"
+    result = _convert_markdown_to_telegram(text)
+    assert "📍 *Title*" in result
+    assert "Some *bold* body" in result
+
+
+def test_convert_markdown_leaves_plain_text_unchanged():
+    text = "Plain text with no markdown."
+    assert _convert_markdown_to_telegram(text) == text
