@@ -275,20 +275,18 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if not llm:
         summary = f"Latest {interaction_type}: {response[:220]}"
-        await _safe_reply_text(update.message, f"📝 **Summary:**\n{summary}", markdown=True)
-        return
+    else:
+        summary_prompt = (
+            "Summarize this user interaction in 1-2 short sentences. "
+            "Return only the summary text.\n\n"
+            f"Interaction type: {interaction_type}\n"
+            f"User input: {query}\n"
+            f"Bot response: {response}"
+        )
 
-    summary_prompt = (
-        "Summarize this user interaction in 1-2 short sentences. "
-        "Return only the summary text.\n\n"
-        f"Interaction type: {interaction_type}\n"
-        f"User input: {query}\n"
-        f"Bot response: {response}"
-    )
-
-    summary = await asyncio.to_thread(llm.generate, summary_prompt, temperature=0.2)
-    if isinstance(summary, str) and summary.strip().lower().startswith("error:"):
-        summary = response[:220]
+        summary = await asyncio.to_thread(llm.generate, summary_prompt, temperature=0.2)
+        if isinstance(summary, str) and summary.strip().lower().startswith("error:"):
+            summary = response[:220]
 
     final_text = f"📝 *Summary:*\n{summary}"
     try:
