@@ -9,7 +9,7 @@ is driven directly with asyncio.run() instead of an async test function.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from bot.handlers import export_command, stats_command
+from bot.handlers import export_command, stats_command, summarize_command
 from utils.cache import RateLimiter
 from utils.memory import UserMemory
 
@@ -22,9 +22,10 @@ def _make_update(user_id=1):
     return update
 
 
-def _make_context(bot_data):
+def _make_context(bot_data, args=None):
     context = MagicMock()
     context.bot_data = bot_data
+    context.args = args if args is not None else []
     return context
 
 
@@ -102,3 +103,68 @@ def test_stats_handles_missing_systems_gracefully():
     update.message.reply_text.assert_awaited_once()
     text = update.message.reply_text.call_args[0][0]
     assert "Unavailable" in text
+
+
+# ---------------------------------------------------------------------------
+# /summarize (issue #22)
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_without_llm_edits_placeholder_message():
+    """When LLM is not configured, /summarize edits the placeholder instead of sending a new message (issue #22)."""
+    memory = UserMemory(max_history=3)
+    memory.add_interaction(user_id=1, query="What is python?", response="A programming language.", interaction_type="text")
+
+    processing_msg = MagicMock()
+    processing_msg.edit_text = AsyncMock()
+
+    update = _make_update(user_id=1)
+    update.message.reply_text = AsyncMock(return_value=processing_msg)
+    context = _make_context({"user_memory": memory})
+
+    asyncio.run(summarize_command(update, context))
+
+    # reply_text should only be called once for the placeholder
+    update.message.reply_text.assert_awaited_once_with("📝 Summarizing the last interaction...")
+    # placeholder should be edited with the fallback summary
+    processing_msg.edit_text.assert_awaited_once()
+    args, kwargs = processing_msg.edit_text.call_args
+    assert "📝 *Summary:*" in args[0]
+    assert "Latest text: A programming language." in args[0]
+    assert kwargs.get("parse_mode") == "Markdown"
+
+
+def test_summarize_with_llm_edits_placeholder_message():
+    """When LLM is configured, /summarize edits the placeholder with generated summary."""
+    memory = UserMemory(max_history=3)
+    memory.add_interaction(user_id=1, query="What is python?", response="A programming language.", interaction_type="text")
+
+    processing_msg = MagicMock()
+    processing_msg.edit_text = AsyncMock()
+
+    update = _make_update(user_id=1)
+    update.message.reply_text = AsyncMock(return_value=processing_msg)
+
+    mock_llm = MagicMock()
+    mock_llm.generate.return_value = "Python is a high-level programming language."
+    context = _make_context({"user_memory": memory, "llm": mock_llm})
+
+    asyncio.run(summarize_command(update, context))
+
+    update.message.reply_text.assert_awaited_once_with("📝 Summarizing the last interaction...")
+    processing_msg.edit_text.assert_awaited_once()
+    args, kwargs = processing_msg.edit_text.call_args
+    assert "Python is a high-level programming language." in args[0]
+    assert kwargs.get("parse_mode") == "Markdown"
+
+
+def test_summarize_without_history_replies_error():
+    """When user has no history, reply directly without placeholder."""
+    memory = UserMemory(max_history=3)
+    update = _make_update(user_id=1)
+    context = _make_context({"user_memory": memory})
+
+    asyncio.run(summarize_command(update, context))
+
+    update.message.reply_text.assert_awaited_once()
+    assert "No interactions found to summarize yet." in update.message.reply_text.call_args[0][0]
