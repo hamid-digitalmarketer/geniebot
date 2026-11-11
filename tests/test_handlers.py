@@ -137,6 +137,22 @@ def test_convert_markdown_headings_still_converted():
     assert "Some *bold* body" in result
 
 
+def test_convert_markdown_heading_with_bold_stays_balanced():
+    # Regression for the issue #23 review: the bold substitution used to run
+    # before the heading branch, so the heading text was converted twice and
+    # came out as "📌 **Important* heading*" with unbalanced asterisks.
+    assert (
+        _convert_markdown_to_telegram("### **Important** heading")
+        == "📌 *Important heading*"
+    )
+
+
+def test_convert_markdown_heading_with_several_bold_spans():
+    result = _convert_markdown_to_telegram("## **Bold** and **second** heading")
+    assert result == "🔹 *Bold and second heading*"
+    assert result.count("*") % 2 == 0
+
+
 def test_convert_markdown_leaves_plain_text_unchanged():
     text = "Plain text with no markdown."
     assert _convert_markdown_to_telegram(text) == text
